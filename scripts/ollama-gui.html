@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ollama GUI (HubStation)</title>
+  <style>
+    body { font-family: Segoe UI, Tahoma, sans-serif; background:#0b1020; color:#e5e7eb; margin:0; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .card { background:#0f172a; border:1px solid #1f2937; border-radius:12px; padding:16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    .col { flex:1 1 260px; min-width:260px; }
+    label { display:block; font-size:12px; color:#94a3b8; margin-bottom:6px; }
+    input, select, textarea { width:100%; padding:10px; border-radius:8px; border:1px solid #334155; background:#0b1327; color:#e5e7eb; }
+    textarea { min-height:120px; resize:vertical; }
+    .btn { border:0; border-radius:8px; padding:10px 14px; cursor:pointer; font-weight:600; }
+    .btn-primary { background:linear-gradient(135deg,#6366f1,#8b5cf6); color:white; }
+    .btn-secondary { background:#334155; color:#e2e8f0; }
+    .btn-danger { background:#ef4444; color:white; }
+    .stack { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .title { font-size:20px; font-weight:700; margin:8px 0 16px 0; color:#a5b4fc; }
+    .badge { display:inline-block; font-size:12px; background:#1f2937; color:#a5b4fc; padding:4px 8px; border-radius:6px; }
+    .out { white-space:pre-wrap; background:#0b1327; border:1px solid #334155; border-radius:8px; padding:12px; min-height:160px; }
+    .split { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    @media (max-width: 900px){ .split { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">Ollama GUI <span class="badge">HubStation Local</span></div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row">
+        <div class="col">
+          <label>Hub URL</label>
+          <input id="hubUrl" value="http://127.0.0.1:9099" />
+        </div>
+        <div class="col">
+          <label>Model</label>
+          <select id="model"></select>
+        </div>
+        <div class="col">
+          <label>Temperature</label>
+          <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.7" />
+        </div>
+        <div class="col">
+          <label>Heartbeat (sec)</label>
+          <input id="heartbeatSeconds" type="number" min="1" step="1" value="60" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="col">
+          <label>Voice (optional)</label>
+          <div class="stack">
+            <select id="voice"></select>
+            <button class="btn btn-secondary" id="btnVoices">Refresh Voices</button>
+          </div>
+        </div>
+        <div class="col" style="align-self:flex-end;">
+          <div class="stack">
+            <button class="btn btn-secondary" id="btnModels">Refresh Models</button>
+            <button class="btn btn-secondary" id="btnPs">List Running</button>
+            <button class="btn btn-secondary" id="btnPull">Pull Model</button>
+            <button class="btn btn-danger" id="btnStop">Stop Model</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="split">
+      <div class="card">
+        <label>Prompt</label>
+        <textarea id="prompt" placeholder="Type your instruction..."></textarea>
+        <div class="stack" style="margin-top:10px;">
+          <button class="btn btn-primary" id="btnSend">Send</button>
+          <button class="btn btn-secondary" id="btnSpeak">Speak Reply</button>
+          <button class="btn btn-secondary" id="btnInsertSchema">Insert Template</button>
+          <button class="btn btn-primary" id="btnSendSchema">Send w/ Schema</button>
+        </div>
+      </div>
+      <div class="card">
+        <label>Response</label>
+        <div id="out" class="out"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const el = id => document.getElementById(id);
+    function hub() { return (el('hubUrl').value || 'http://127.0.0.1:9099').replace(/\/$/,''); }
+
+    async function hubStatus(){
+      const r = await fetch(hub()+"/status");
+      if(!r.ok) return null; return r.json();
+    }
+    async function hubModels(){
+      try{ const r = await fetch(hub()+"/models"); if(!r.ok) return []; const j = await r.json(); return Array.isArray(j.models)? j.models : []; } catch{ return []; }
+    }
+    async function hubVoices(){
+      try{ const r = await fetch(hub()+"/voices"); if(!r.ok) return {voices:[]}; return r.json(); } catch{ return {voices:[]}; }
+    }
+    async function hubPs(){
+      const r = await fetch(hub()+"/ollama/ps"); if(!r.ok) throw new Error('ps failed'); return r.json();
+    }
+    async function hubPull(model){
+      const r = await fetch(hub()+"/ollama/pull",{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model})});
+      if(!r.ok) throw new Error('pull failed'); return r.json();
+    }
+    async function hubStop(model){
+      const r = await fetch(hub()+"/ollama/stop",{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({model})});
+      if(!r.ok) throw new Error('stop failed'); return r.json();
+    }
+    async function hubChat(model, messages, temperature){
+      const r = await fetch(hub()+"/chat",{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model, messages, temperature })});
+      if(!r.ok) throw new Error('chat failed'); const j = await r.json(); if(!j.ok) throw new Error(j.error||'hub error'); return j.response||'';
+    }
+    async function hubTTS(text, voice){
+      try{ await fetch(hub()+"/tts", {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text, voice: voice||null })}); }catch{}
+    }
+
+    async function refreshModels(){
+      const sel = el('model'); sel.innerHTML = '';
+      const list = await hubModels();
+      const names = list.length ? list : ['qwen3:latest','qwen2.5:latest','llama3:latest','mistral:latest'];
+      for(const m of names){ const o = document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); }
+    }
+    async function refreshVoices(){
+      const v = await hubVoices(); const sel = el('voice'); sel.innerHTML='';
+      const def = document.createElement('option'); def.value=''; def.textContent = (v && v.default) ? `${v.default} (default)` : 'Default'; sel.appendChild(def);
+      if(v && Array.isArray(v.voices)){
+        for(const name of v.voices){ const o = document.createElement('option'); o.value=name; o.textContent=name; sel.appendChild(o); }
+      }
+    }
+
+    async function init(){
+      await refreshModels();
+      await refreshVoices();
+      const st = await hubStatus();
+      if(st && st.default_model){ const idx = Array.from(el('model').options).findIndex(o=>o.value===st.default_model); if(idx>=0) el('model').selectedIndex=idx; }
+    }
+
+    el('btnModels').addEventListener('click', refreshModels);
+    el('btnVoices').addEventListener('click', refreshVoices);
+    el('btnPs').addEventListener('click', async ()=>{
+      try{ const j = await hubPs(); alert(JSON.stringify(j, null, 2)); } catch(e){ alert('ps error: '+e.message); }
+    });
+    el('btnPull').addEventListener('click', async ()=>{
+      const model = el('model').value || 'qwen3:latest';
+      el('out').textContent = `Pulling ${model}...`;
+      try{ const j = await hubPull(model); el('out').textContent = JSON.stringify(j, null, 2);} catch(e){ el('out').textContent = 'Pull error: '+e.message; }
+    });
+    el('btnStop').addEventListener('click', async ()=>{
+      const model = el('model').value || '';
+      if(!model){ alert('Select a model first'); return; }
+      try{ const j = await hubStop(model); alert(JSON.stringify(j, null, 2)); } catch(e){ alert('stop error: '+e.message); }
+    });
+    el('btnSend').addEventListener('click', async ()=>{
+      const model = el('model').value || 'qwen3:latest';
+      const temperature = parseFloat(el('temperature').value||'0.7');
+      const text = (el('prompt').value||'').trim(); if(!text){ return; }
+      el('out').textContent = 'Thinking...';
+      const msgs = [ { role:'user', content: text } ];
+      try{ const resp = await hubChat(model, msgs, temperature); el('out').textContent = resp; } catch(e){ el('out').textContent = 'Error: '+e.message; }
+    });
+    el('btnSpeak').addEventListener('click', async ()=>{
+      const t = el('out').textContent||''; const v = el('voice').value||''; if(!t){ return; } await hubTTS(t, v); 
+    });
+    function buildSelfPrompt(){
+      const hbRaw = el('heartbeatSeconds').value||'60';
+      let hb = parseInt(hbRaw,10); if(!Number.isFinite(hb) || hb<1) hb = 60;
+      const text = (el('prompt').value||'').trim();
+      const goal = (text.split('\n')[0]||'').slice(0,500) || 'Assist Tyler with current task.';
+      return {
+        time: Math.floor(Date.now()/1000),
+        heartbeat: hb,
+        goal: goal,
+        model_long_term_goal: "",
+        notes: "",
+        scratchpad: "",
+        tools: { cheatsheet: [], classes: { drafting: [], scripting: [], research: [] } },
+        files_cheatsheet: [],
+        board: "",
+        tyler: ""
+      };
+    }
+    async function insertTemplate(){
+      try{
+        const r = await fetch('self_prompt_template.json');
+        if(!r.ok) throw new Error('template fetch failed');
+        const tpl = await r.json();
+        const txt = JSON.stringify(tpl,null,2);
+        const ta = el('prompt');
+        ta.value = txt + (ta.value ? ('\n\n'+ta.value) : '');
+      }catch(e){ alert('Template load failed: '+e.message); }
+    }
+    async function sendWithSchema(){
+      const model = el('model').value || 'qwen3:latest';
+      const temperature = parseFloat(el('temperature').value||'0.7');
+      const text = (el('prompt').value||'').trim(); if(!text){ return; }
+      el('out').textContent = 'Thinking (schema)...';
+      const schemaObj = buildSelfPrompt();
+      const messages = [
+        { role:'system', content: 'SelfPrompt JSON: '+JSON.stringify(schemaObj) },
+        { role:'user', content: text }
+      ];
+      try{ const resp = await hubChat(model, messages, temperature); el('out').textContent = resp; }
+      catch(e){ el('out').textContent = 'Error: '+e.message; }
+    }
+    el('btnInsertSchema').addEventListener('click', insertTemplate);
+    el('btnSendSchema').addEventListener('click', sendWithSchema);
+
+    window.addEventListener('load', init);
+  </script>
+</body>
+</html>

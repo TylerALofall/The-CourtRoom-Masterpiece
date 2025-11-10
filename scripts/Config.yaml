@@ -1,0 +1,200 @@
+// package.json
+{
+  "name": "evidence-management-system",
+  "version": "2.0.0",
+  "description": "Advanced Evidence Management System with Gemini AI and Google Drive Integration",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "node scripts/init-database.js",
+    "backup": "node scripts/backup.js",
+    "test": "jest",
+    "migrate": "node scripts/migrate.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^5.1.1",
+    "@google/generative-ai": "^0.21.0",
+    "googleapis": "^128.0.0",
+    "dotenv": "^16.3.1",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "compression": "^1.7.4",
+    "winston": "^3.11.0",
+    "node-cron": "^3.0.3",
+    "pdf-parse": "^1.1.1",
+    "tesseract.js": "^5.0.3",
+    "papaparse": "^5.4.1",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Tyler Lofall",
+  "license": "MIT"
+}
+
+// .env (Environment Configuration)
+# Server Configuration
+NODE_ENV=production
+PORT=3000
+
+# Database Configuration
+DATABASE_PATH=./evidence.db
+DATABASE_BACKUP_PATH=./backups
+
+# Google APIs Configuration
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+GOOGLE_REDIRECT_URI=http://localhost:3000/auth/google/callback
+
+# Gemini AI Configuration
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Security Configuration
+JWT_SECRET=your_super_secret_jwt_key_here
+SESSION_SECRET=your_session_secret_here
+ENCRYPTION_KEY=your_32_character_encryption_key_here
+
+# File Upload Configuration
+MAX_FILE_SIZE=104857600
+UPLOAD_DIR=./uploads
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Logging
+LOG_LEVEL=info
+LOG_DIR=./logs
+
+# Backup Configuration
+BACKUP_SCHEDULE="0 2 * * *"
+MAX_BACKUP_FILES=30
+
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./backups:/app/backups
+      - ./logs:/app/logs
+      - ./evidence.db:/app/evidence.db
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - app
+    restart: unless-stopped
+
+# Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy application files
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p uploads backups logs
+
+# Set permissions
+RUN chown -R node:node /app
+
+USER node
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
+
+# nginx.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream app {
+        server app:3000;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        client_max_body_size 100M;
+
+        location / {
+            proxy_pass http://app;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_cache_bypass $http_upgrade;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+
+# .gitignore
+node_modules/
+.env
+*.db
+*.db-journal
+uploads/
+backups/
+logs/
+tokens.json
+.DS_Store
+*.log
+npm-debug.log*
+.npm
+.eslintcache
+coverage/
+.nyc_output
+dist/
+build/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

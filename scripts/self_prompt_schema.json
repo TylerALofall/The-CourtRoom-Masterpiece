@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tyler.local/schemas/self_prompt_schema.json",
+  "title": "Self-Prompt (9 Sides)",
+  "description": "Nine-part self-prompt structure for local looped reasoning. Derived from A..I: Time, Heartbeat, Goal, Model Long-Term Goal, Notes/Scratchpad, Tools, Files Cheatsheet, Board, Tyler.",
+  "type": "object",
+  "properties": {
+    "time": {
+      "description": "Universal computation time (unix epoch seconds).",
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "pattern": "^\\d{9,}$" }
+      ]
+    },
+    "heartbeat": {
+      "description": "Seconds between allowed loop ticks.",
+      "type": "integer",
+      "minimum": 0, // 0 = disabled
+      "default": 60
+    },
+    "goal": {
+      "description": "Current user goal for this project.",
+      "type": "string",
+      "minLength": 40
+    },
+    "model_long_term_goal": {
+      "description": "Model’s own running long-term objective (editable by model).",
+      "type": "string" //min 100 characters
+    },
+    "notes": {
+      "description": "Memory notes (persistent between turns).",
+      "type": "string" //modl or user editable
+    },
+    "scratchpad": {
+      "description": "Working scratch for step-by-step planning this turn.",
+      "type": "string" //model needs min slots filled making him annotate
+    },
+    "tools": {
+      "description": "Tooling hints and groupings.",
+    ***  "type": "object", //this needs chnged to array, no layers... model needs to self prompt so he can edit this next turn when needed and has the tools to do so
+      "properties": {
+        "cheatsheet": {
+ this only appears once the previous tool selection is picked this then opens up a door to to an instant return prompt (rag) and that rag will have lots of answer... but it wont take up his context window in the previous logs. This way his choices are not clouded with tons of pointless pollution diluting down his focus.     ...   SEE MESSAGE WHEN YOU GET HERE BECAUSE THIS WILL NOT BE ACCEPTABLE LIKE THIS IS  "description": "Freeform list of tool names or tips.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "classes": {
+"description": "Tool classes and their SAME ISSUE THIS IS WHY I WANT ALL OUT MESSAGES TO BE PROMPTS BECAUSE IM TIRED OF TYPING OUT!!!!!ems.",
+          "type": "object",
+          "properties": {
+            "drafting": { "type": "array", "items": { "type": "string" } },
+            "scripting": { "type": "array", "items": { "type": "string" } },
+            "research": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "files_cheatsheet": {
+      "description": "File build priorities / required artifacts.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "board": {
+      "description": "Broadcast message visible to all agents (board).",
+      "type": "string"
+    },
+    "tyler": {
+      "description": "Direct message to Tyler.",
+      "type": "string"
+    }
+  },
+  "required": ["time", "heartbeat", "goal"],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "time": 1731123456,
+      "heartbeat": 60,
+      "goal": "Wire personal-website Ollama GUI to HubStation and run a smoke test.",
+      "model_long_term_goal": "Deliver stable local loop UX for evidence work.",
+      "notes": "Prefer Microsoft Brian/Mark for TTS. Avoid David.",
+      "scratchpad": "1) Start ollama; 2) Pull qwen3; 3) Test /chat; 4) Add speak.",
+      "tools": {
+        "cheatsheet": ["/chat", "/tts", "/models"],
+        "classes": {
+          "drafting": ["Outline", "Summarize"],
+          "scripting": ["PowerShell Invoke-RestMethod"],
+          "research": ["Search PDFs"]
+        }
+      },
+      "files_cheatsheet": [
+        "personal-website/ollama-gui.html",
+        "HubStation/HubStation.ps1",
+        "HubStation/hub_config.json"
+      ],
+      "board": "Models: stay in JSON when using tools.",
+      "tyler": "Ready to pull qwen3 and test."
+    }
+  ]
+}

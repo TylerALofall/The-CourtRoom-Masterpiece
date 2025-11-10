@@ -1,0 +1,192 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Ollama Local API",
+    "version": "1.0.0",
+    "description": "OpenAPI spec mapping Ollama's local HTTP API so tools can call it via the OpenAPI MCP server."
+  },
+  "servers": [
+    { "url": "http://127.0.0.1:11434" }
+  ],
+  "paths": {
+    "/api/generate": {
+      "post": {
+        "operationId": "ollamaGenerate",
+        "summary": "Generate a non-streamed completion from a prompt",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": { "type": "string", "example": "qwen3:latest" },
+                  "prompt": { "type": "string" },
+                  "images": { "type": "array", "items": { "type": "string", "description": "base64-encoded image" } },
+                  "format": { "type": "string", "nullable": true },
+                  "options": { "type": "object", "additionalProperties": true, "nullable": true },
+                  "stream": { "type": "boolean", "default": false }
+                },
+                "required": ["model", "prompt"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Non-streamed response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "model": { "type": "string" },
+                    "created_at": { "type": "string" },
+                    "response": { "type": "string" },
+                    "done": { "type": "boolean" }
+                  },
+                  "required": ["response", "done"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "operationId": "ollamaChat",
+        "summary": "Chat with the model using a messages array (non-streamed)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": { "type": "string", "example": "qwen3:latest" },
+                  "messages": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/ChatMessage" }
+                  },
+                  "format": { "type": "string", "nullable": true },
+                  "options": { "type": "object", "additionalProperties": true, "nullable": true },
+                  "stream": { "type": "boolean", "default": false }
+                },
+                "required": ["model", "messages"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Non-streamed chat response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "model": { "type": "string" },
+                    "created_at": { "type": "string" },
+                    "message": { "$ref": "#/components/schemas/ChatMessage" },
+                    "done": { "type": "boolean" }
+                  },
+                  "required": ["message", "done"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tags": {
+      "get": {
+        "operationId": "ollamaListTags",
+        "summary": "List available models",
+        "responses": {
+          "200": {
+            "description": "List of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "size": { "type": "integer" },
+                          "digest": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ps": {
+      "get": {
+        "operationId": "ollamaPs",
+        "summary": "List running models/sessions",
+        "responses": {
+          "200": {
+            "description": "Running models",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pull": {
+      "post": {
+        "operationId": "ollamaPull",
+        "summary": "Pull/download a model",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": { "type": "string", "example": "qwen3:latest" }
+                },
+                "required": ["model"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pull progress or acknowledgement",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "role": { "type": "string", "enum": ["system", "user", "assistant"] },
+          "content": { "type": "string" }
+        },
+        "required": ["role", "content"]
+      }
+    }
+  }
+}

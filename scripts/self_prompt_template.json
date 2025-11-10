@@ -1,0 +1,19 @@
+{
+  "time": 1731123456,
+  "heartbeat": 60,
+  "goal": "",
+  "model_long_term_goal": "",
+  "notes": "",
+  "scratchpad": "",
+  "tools": {
+    "cheatsheet": [],
+    "classes": {
+      "drafting": [],
+      "scripting": [],
+      "research": []
+    }
+  },
+  "files_cheatsheet": [],
+  "board": "",
+  "tyler": ""
+}
