@@ -55,6 +55,21 @@ $script:VoiceBlockList = if ($Config -and $Config.PSObject.Properties.Match('Voi
 
 Add-Type -AssemblyName System.Speech | Out-Null
 
+# Import custom modules
+$ReflectionsModule = Join-Path $PSScriptRoot 'Reflections.psm1'
+$UIDParserModule = Join-Path $PSScriptRoot 'UIDParser.psm1'
+$ModelDispatchModule = Join-Path $PSScriptRoot 'ModelDispatch.psm1'
+
+if (Test-Path $ReflectionsModule) { Import-Module $ReflectionsModule -Force }
+if (Test-Path $UIDParserModule) { Import-Module $UIDParserModule -Force }
+if (Test-Path $ModelDispatchModule) { Import-Module $ModelDispatchModule -Force }
+
+# Evidence Card prompt (externalized, never modified)
+$script:GeminiPromptPath = Join-Path $PSScriptRoot '..\docs\GEMINI_EVIDENCE_PROMPT.txt'
+
+# CSV log path
+$script:CsvLogPath = Join-Path $PSScriptRoot '..\data\logs\actions.csv'
+
 function Write-Log { param([string]$Msg,[string]$Level='INFO')
     $line = "[$(Get-Date -Format o)] [$Level] $Msg"
     try {
@@ -684,6 +699,118 @@ while ($true) {
                 } catch {}
                 $items = Pop-QueueItems -Release $rel -Max $max
                 Send-Json $ctx (@{ ok=$true; items = $items }) 200
+            }
+            '/api/gemini/analyze' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try { $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop } catch { Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400; break }
+                $evidenceText = [string]$json.evidence
+                if (-not $evidenceText) { Send-Json $ctx (@{ ok=$false; error='evidence field required' }) 400; break }
+
+                # Load Gemini prompt template (never modified)
+                $promptTemplate = ''
+                if (Test-Path $script:GeminiPromptPath) {
+                    $promptTemplate = Get-Content -Path $script:GeminiPromptPath -Raw
+                } else {
+                    Send-Json $ctx (@{ ok=$false; error='Gemini prompt template not found' }) 500; break
+                }
+
+                # Build full prompt
+                $fullPrompt = $promptTemplate + "`n`n--- EVIDENCE TO ANALYZE ---`n" + $evidenceText
+
+                # Get API key from config
+                $geminiKey = if ($Config.GeminiApiKey) { [string]$Config.GeminiApiKey } else { '' }
+                if (-not $geminiKey) { Send-Json $ctx (@{ ok=$false; error='GeminiApiKey not configured' }) 500; break }
+
+                Write-Log "[GEMINI] Analyzing evidence (${evidenceText.Length} chars)"
+
+                # Call Gemini via ModelDispatch
+                $result = Invoke-Model -ModelName 'gemini' -Prompt $fullPrompt -GeminiApiKey $geminiKey -Temperature 0.4
+
+                if (-not $result.ok) {
+                    Send-Json $ctx (@{ ok=$false; error=$result.error }) 500
+                    break
+                }
+
+                # Process response: split into cards and save
+                $cards = Process-GeminiResponse -ResponseText $result.response -SourceModel 'gemini'
+
+                # Log to CSV
+                foreach ($card in $cards) {
+                    if ($card.ok) {
+                        Add-LogRow -LogPath $script:CsvLogPath -SourceModel 'gemini' -RouteAction 'evidence_card' -UID $card.uid -ContentPreview "Saved card: $($card.uid)"
+                    }
+                }
+
+                Write-Log "[GEMINI] Processed $($cards.Count) cards"
+                Send-Json $ctx (@{ ok=$true; cards=$cards; count=$cards.Count }) 200
+            }
+            '/api/models/run' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try { $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop } catch { Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400; break }
+
+                $modelName = [string]$json.model
+                $prompt = [string]$json.prompt
+                $sysPrompt = [string]$json.system_prompt
+                $temp = if ($json.temperature -ne $null) { [double]$json.temperature } else { 0.7 }
+                $format = [string]$json.format
+
+                if (-not $modelName -or -not $prompt) {
+                    Send-Json $ctx (@{ ok=$false; error='model and prompt required' }) 400
+                    break
+                }
+
+                if ($modelName -notin @('qwen3', 'kimi', 'gemini')) {
+                    Send-Json $ctx (@{ ok=$false; error='Invalid model. Use: qwen3, kimi, or gemini' }) 400
+                    break
+                }
+
+                Write-Log "[DISPATCH] Running model: $modelName (temp=$temp, format=$format)"
+
+                $geminiKey = if ($Config.GeminiApiKey) { [string]$Config.GeminiApiKey } else { '' }
+
+                $result = Invoke-Model `
+                    -ModelName $modelName `
+                    -Prompt $prompt `
+                    -SystemPrompt $sysPrompt `
+                    -Temperature $temp `
+                    -Format $format `
+                    -GeminiApiKey $geminiKey `
+                    -OllamaBaseUrl $OllamaBaseUrl
+
+                # Log to CSV
+                $preview = if ($result.response.Length -gt 100) { $result.response.Substring(0, 100) + '...' } else { $result.response }
+                Add-LogRow -LogPath $script:CsvLogPath -SourceModel $modelName -RouteAction 'model_run' -ContentPreview $preview
+
+                Send-Json $ctx $result 200
+            }
+            '/logs/csv/tail' {
+                if ($req.HttpMethod -ne 'GET') { Send-Json $ctx (@{ ok=$false; error='GET required' }) 405; break }
+
+                $count = 50
+                $filterUser = $false
+
+                # Parse query string
+                try {
+                    if ($req.Url.Query) {
+                        $qry = $req.Url.Query.TrimStart('?')
+                        foreach ($pair in ($qry -split '&')) {
+                            if (-not $pair) { continue }
+                            $kv = $pair -split '=',2
+                            if ($kv.Length -ge 2) {
+                                if ($kv[0] -eq 'count') { try { $count = [int]$kv[1] } catch {} }
+                                if ($kv[0] -eq 'filter_user' -and $kv[1] -eq 'true') { $filterUser = $true }
+                            }
+                        }
+                    }
+                } catch {}
+
+                Write-Log "[CSV] Fetching tail: count=$count, filter_user=$filterUser"
+
+                $rows = Get-LogTail -LogPath $script:CsvLogPath -Count $count -FilterUserOnly $filterUser
+
+                Send-Json $ctx (@{ ok=$true; rows=$rows; count=$rows.Count; filtered=$filterUser }) 200
             }
             Default {
                 Send-Json $ctx (@{ ok=$false; error='Not found' }) 404
