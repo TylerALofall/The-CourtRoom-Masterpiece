@@ -1824,6 +1824,18 @@
             btnFull.addEventListener('click', () => toggleFull());
             btnRecent.addEventListener('click', () => openRecent());
             if (btnGemini) btnGemini.addEventListener('click', () => toggleGemini());
+
+            // Probe backend for Gemini enabled state and adjust UI/behavior
+            try {
+                fetch('/api/gemini/enabled').then(r=>r.json()).then(s => {
+                    if (!s || s.enabled === false) {
+                        // Force OFF and hide toggle
+                        localStorage.setItem('GEMINI_ON','0');
+                        if (btnGemini) { btnGemini.style.display = 'none'; }
+                    }
+                    updateGeminiButtonUI();
+                }).catch(()=>{ /* ignore */ });
+            } catch(_) { /* ignore */ }
             btnHB.addEventListener('click', () => openHB());
             btnLogs.addEventListener('click', () => openLogs());
             btnStop.addEventListener('click', () => openStop());
@@ -2299,6 +2311,9 @@
 
         // --- Gemini Toggle (UI/local state) ---
         function isGeminiOn(){
+            // If backend has hidden the toggle (disabled), treat as OFF
+            const btn = document.getElementById('btnGemini');
+            if (btn && btn.style && btn.style.display === 'none') return false;
             return localStorage.getItem('GEMINI_ON') === '1';
         }
         function setGemini(on){

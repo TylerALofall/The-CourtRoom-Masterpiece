@@ -6,12 +6,32 @@ $ErrorActionPreference = 'Stop'
 Write-Host "[DEBUG] HubStation starting..." -ForegroundColor Cyan
 Write-Host "[DEBUG] PSScriptRoot: $PSScriptRoot" -ForegroundColor Cyan
 
+# Single-instance guard with PID file
+$PidFile = Join-Path $PSScriptRoot 'hubstation.pid'
+try {
+    if (Test-Path $PidFile) {
+        $existingPidText = (Get-Content -Path $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($existingPidText) {
+            $existingPid = 0; [int]::TryParse($existingPidText, [ref]$existingPid) | Out-Null
+            if ($existingPid -gt 0) {
+                $p = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+                if ($p) {
+                    Write-Host "[INIT] Another HubStation is already running (PID $existingPid). Exiting." -ForegroundColor Yellow
+                    try { Add-Notify "Duplicate start refused (PID $existingPid)" 'warn' | Out-Null } catch {}
+                    return
+                }
+            }
+        }
+    }
+    Set-Content -Path $PidFile -Value $PID -Encoding ascii -ErrorAction SilentlyContinue
+} catch { }
+
 $ConfigPath = Join-Path $PSScriptRoot 'hub_config.json'
 Write-Host "[DEBUG] Config path: $ConfigPath" -ForegroundColor Cyan
 if (-not (Test-Path $ConfigPath)) {
     Write-Host "[DEBUG] Config not found, creating default..." -ForegroundColor Yellow
     # Updated default port to 9099 (was 9199) to standardize environment
-    $default = @{ Port = 9099; OllamaBaseUrl = 'http://127.0.0.1:11434'; DefaultVoice = $null; Rate = 0; Volume = 100 }
+    $default = @{ Port = 9099; OllamaBaseUrl = 'http://127.0.0.1:11434'; DefaultVoice = $null; Rate = 0; Volume = 100; GeminiEnabled = $true }
     $default | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
 }
 
@@ -24,6 +44,7 @@ $OllamaBaseUrl = if ($Config.OllamaBaseUrl) { [string]$Config.OllamaBaseUrl } el
 $DefaultVoice = $Config.DefaultVoice
 $DefaultRate  = if ($Config.Rate -ne $null) { [int]$Config.Rate } else { 0 }
 $DefaultVolume= if ($Config.Volume -ne $null) { [int]$Config.Volume } else { 100 }
+$GeminiEnabled = if ($Config -and $Config.PSObject.Properties.Match('GeminiEnabled').Count -gt 0 -and $Config.GeminiEnabled -ne $null) { [bool]$Config.GeminiEnabled } else { $true }
 $MaxCtxTokens = if ($Config -and $Config.PSObject.Properties.Match('MaxCtxTokens').Count -gt 0 -and $Config.MaxCtxTokens -ne $null) { [int]$Config.MaxCtxTokens } else { 10000 }
 $MaxPredictTokens = if ($Config -and $Config.PSObject.Properties.Match('MaxPredictTokens').Count -gt 0 -and $Config.MaxPredictTokens -ne $null) { [int]$Config.MaxPredictTokens } else { 512 }
 $DefaultModel = if ($Config -and $Config.PSObject.Properties.Match('DefaultModel').Count -gt 0 -and $Config.DefaultModel) { [string]$Config.DefaultModel } else { 'qwen3:latest' }
@@ -76,22 +97,32 @@ function Speak-Status {
 }
 
 # ==============================================================================
-# Import Gemini Service Module
+# Import Gemini Service Module (config-gated)
 # ==============================================================================
 
 $GeminiServicePath = Join-Path $PSScriptRoot 'GeminiService.ps1'
-if (Test-Path $GeminiServicePath) {
-    try {
-        Import-Module $GeminiServicePath -Force -ErrorAction Stop
-        Write-Host "[INIT] GeminiService module loaded" -ForegroundColor Green
-        Speak-Status "Gemini Service loaded"
-    } catch {
-        Write-Host "[INIT] Failed to load GeminiService: $($_.Exception.Message)" -ForegroundColor Red
-        Speak-Status "Error loading Gemini Service"
+
+# Auto-enable Gemini if API key is present or service file exists
+if (-not $GeminiEnabled) {
+    if ($env:GEMINI_API_KEY -or (Test-Path $GeminiServicePath)) { $GeminiEnabled = $true }
+}
+
+if ($GeminiEnabled) {
+    if (Test-Path $GeminiServicePath) {
+        try {
+            Import-Module $GeminiServicePath -Force -ErrorAction Stop
+            Write-Host "[INIT] GeminiService module loaded" -ForegroundColor Green
+            Speak-Status "Gemini Service loaded"
+        } catch {
+            Write-Host "[INIT] Failed to load GeminiService: $($_.Exception.Message)" -ForegroundColor Red
+            Speak-Status "Error loading Gemini Service"
+        }
+    } else {
+        Write-Host "[INIT] GeminiService.ps1 not found at: $GeminiServicePath" -ForegroundColor Yellow
+        Speak-Status "Gemini Service not found"
     }
 } else {
-    Write-Host "[INIT] GeminiService.ps1 not found at: $GeminiServicePath" -ForegroundColor Yellow
-    Speak-Status "Gemini Service not found"
+    Write-Host "[INIT] Gemini not enabled (no API key and service file not found)" -ForegroundColor Yellow
 }
 
 # ==============================================================================
@@ -289,11 +320,11 @@ function Invoke-WhisperTranscribe([string]$AudioPath, [string]$Language, [string
     if (-not (Test-Path $AudioPath)) { return @{ ok=$false; error="Audio file not found: $AudioPath" } }
     $base = Join-Path $env:TEMP ("hubstt_" + [IO.Path]::GetFileNameWithoutExtension($AudioPath) + "_" + ([guid]::NewGuid().ToString().Substring(0,8)))
     $txtOut = "$base.txt"
-    $args = @('-m', $model, '-f', $AudioPath, '-otxt', '-of', $base)
-    if ($Language) { $args += @('-l', $Language) }
+    $whisperArgs = @('-m', $model, '-f', $AudioPath, '-otxt', '-of', $base)
+    if ($Language) { $whisperArgs += @('-l', $Language) }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
-    $psi.Arguments = ($args -join ' ')
+    foreach ($argument in $whisperArgs) { [void]$psi.ArgumentList.Add($argument) }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -308,7 +339,7 @@ function Invoke-WhisperTranscribe([string]$AudioPath, [string]$Language, [string
     return @{ ok=$true; text=$text; stdout=$stdout; stderr=$stderr }
 }
 
-function Invoke-OllamaChat([string]$Model, $Messages, [double]$Temperature, $Options){
+function Invoke-OllamaChat ([string]$Model, $Messages, [double]$Temperature, $Options){
     $uri = "$OllamaBaseUrl/api/chat"
     $opts = @{ temperature = $Temperature }
     if ($Options) { foreach ($k in $Options.Keys) { $opts[$k] = $Options[$k] } }
@@ -320,7 +351,6 @@ function Invoke-OllamaChat([string]$Model, $Messages, [double]$Temperature, $Opt
         return @{ ok=$false; error='Unexpected Ollama response' }
     } catch { return @{ ok=$false; error=$_.Exception.Message } }
 }
-
 function Get-RecentProcesses([int]$Count){
     try {
         $take = if ($Count -gt 0) { [int]$Count } else { 10 }
@@ -349,6 +379,19 @@ function Save-Note([string]$Text, [string]$Prefix, [bool]$Open){
         if ($Open) { Start-Process -FilePath 'notepad.exe' -ArgumentList @("`"$file`"") | Out-Null }
         return @{ ok=$true; path=$file }
     } catch { return @{ ok=$false; error=$_.Exception.Message } }
+}
+
+# ------------------------------------------------------------------------------
+# Fallback Gemini analyze handler (used if GeminiService module is not loaded)
+# ------------------------------------------------------------------------------
+function Invoke-GeminiAnalyzeFallback($Json){
+    try {
+        $uid = if ($Json.uid) { [string]$Json.uid } else { ([guid]::NewGuid().ToString('N').Substring(0,8)) }
+        $tdate = (Get-Date).ToString('yyyyMMdd_HHmmss')
+        return @{ ok=$true; uid=$uid; tdate=$tdate; message='Gemini fallback used (module not loaded)'; echo=@{ description = [string]$Json.description; quote = [string]$Json.quote; context = [string]$Json.context } }
+    } catch {
+        return @{ ok=$false; error=$_.Exception.Message }
+    }
 }
 
 # In-memory queue for cross-UI messaging
@@ -455,14 +498,31 @@ try {
 
 Write-Host "[DEBUG] Entering request loop..." -ForegroundColor Cyan
 
+${script:ShutdownRequested} = $false
+
 while ($true) {
-    $ctx = $listener.GetContext()
+    try {
+        $ctx = $listener.GetContext()
+    } catch {
+        if ($script:ShutdownRequested -or (-not $listener.IsListening)) { break }
+        Write-Host ("[WARN] GetContext error: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        continue
+    }
     try {
         $req = $ctx.Request
         $path = $req.Url.AbsolutePath.ToLowerInvariant()
         if ($req.HttpMethod -eq 'OPTIONS') { Send-Empty $ctx 204; continue }
 
         switch ($path) {
+            '/admin/exit' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                Write-Log "Shutdown requested via /admin/exit"
+                try { Add-Notify "Shutting down HubStation" 'warn' | Out-Null } catch {}
+                Send-Json $ctx (@{ ok=$true; message='Shutting down' }) 200
+                $script:ShutdownRequested = $true
+                try { $listener.Stop() } catch {}
+                break
+            }
             '/status' {
                 $out = @{ ok = $true; port = $Port; ollama = $OllamaBaseUrl; default_model = $DefaultModel; voices = (Get-Voices); time = (Get-Date).ToString('o'); max_ctx = $MaxCtxTokens; max_predict = $MaxPredictTokens; heartbeat = $script:Heartbeat }
                 Send-Json $ctx $out 200
@@ -800,33 +860,33 @@ while ($true) {
                 $body = Read-Body $ctx
                 try { $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop } catch { Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400; break }
                 if (-not $json.pid) { Send-Json $ctx (@{ ok=$false; error='pid required' }) 400; break }
-                $pid = 0
-                try { $pid = [int]$json.pid } catch { Send-Json $ctx (@{ ok=$false; error='pid must be an integer' }) 400; break }
-                if ($pid -le 0) { Send-Json $ctx (@{ ok=$false; error='invalid pid' }) 400; break }
+                $targetPid = 0
+                try { $targetPid = [int]$json.pid } catch { Send-Json $ctx (@{ ok=$false; error='pid must be an integer' }) 400; break }
+                if ($targetPid -le 0) { Send-Json $ctx (@{ ok=$false; error='invalid pid' }) 400; break }
 
                 # Prevent self-termination and common critical processes
                 $thisPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
-                if ($pid -eq $thisPid) { Send-Json $ctx (@{ ok=$false; error='refusing to terminate server process' }) 403; break }
+                if ($targetPid -eq $thisPid) { Send-Json $ctx (@{ ok=$false; error='refusing to terminate server process' }) 403; break }
                 $blockNames = @('system','idle','csrss','wininit','winlogon','services','lsass','smss','dwm','registry')
 
                 try {
-                    $p = Get-Process -Id $pid -ErrorAction Stop
+                    $p = Get-Process -Id $targetPid -ErrorAction Stop
                     $nameLc = ($p.Name).ToLowerInvariant()
                     if ($blockNames -contains $nameLc) {
-                        Send-Json $ctx (@{ ok=$false; error=('refusing to terminate critical process: ' + $p.Name); pid=$pid; name=$p.Name }) 403
+                        Send-Json $ctx (@{ ok=$false; error=('refusing to terminate critical process: ' + $p.Name); pid=$targetPid; name=$p.Name }) 403
                         break
                     }
                     $force = $false
                     if ($json.PSObject.Properties.Match('force').Count -gt 0) { $force = [bool]$json.force }
-                    Stop-Process -Id $pid -Force:$force -ErrorAction Stop
-                    Write-Log ("Terminated process {0} (PID {1}) force={2}" -f $p.Name, $pid, $force)
-                    Send-Json $ctx (@{ ok=$true; pid=$pid; name=$p.Name; force=$force }) 200
+                    Stop-Process -Id $targetPid -Force:$force -ErrorAction Stop
+                    Write-Log ("Terminated process {0} (PID {1}) force={2}" -f $p.Name, $targetPid, $force)
+                    Send-Json $ctx (@{ ok=$true; pid=$targetPid; name=$p.Name; force=$force }) 200
                 } catch {
                     $msg = $_.Exception.Message
                     if ($msg -match 'Cannot find a process with the process identifier') {
-                        Send-Json $ctx (@{ ok=$false; error='process not found'; pid=$pid }) 404
+                        Send-Json $ctx (@{ ok=$false; error='process not found'; pid=$targetPid }) 404
                     } else {
-                        Send-Json $ctx (@{ ok=$false; error=$msg; pid=$pid }) 500
+                        Send-Json $ctx (@{ ok=$false; error=$msg; pid=$targetPid }) 500
                     }
                 }
             }
@@ -853,24 +913,30 @@ while ($true) {
                 Write-Log "[GEMINI] Analyze request received"
 
                 try {
-                    # Check if GeminiService module is loaded
-                    if (-not (Get-Command Handle-GeminiAnalyzeRequest -ErrorAction SilentlyContinue)) {
-                        Send-Json $ctx (@{ ok=$false; error='GeminiService module not loaded' }) 500
-                        break
+                    $result = $null
+                    # Prefer the real service if available
+                    if (Get-Command Handle-GeminiAnalyzeRequest -ErrorAction SilentlyContinue) {
+                        $result = Handle-GeminiAnalyzeRequest -RequestBody $json
+                    } else {
+                        $result = Invoke-GeminiAnalyzeFallback -Json $json
                     }
 
-                    $result = Handle-GeminiAnalyzeRequest -RequestBody $json
-
-                    if ($result.statusCode -eq 200) {
-                        $resultObj = $result.body | ConvertFrom-Json
-                        Send-Json $ctx $resultObj 200
+                    if ($result -and $result.ok) {
+                        Send-Json $ctx $result 200
                     } else {
-                        Send-Json $ctx (@{ ok=$false; error=$result.body }) $result.statusCode
+                        $errMsg = if ($result -and $result.error) { [string]$result.error } else { 'Gemini analyze failed' }
+                        Send-Json $ctx (@{ ok=$false; error=$errMsg }) 500
                     }
                 } catch {
                     Write-Log "[GEMINI] Error: $($_.Exception.Message)" 'ERROR'
                     Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
                 }
+            }
+            '/api/gemini/enabled' {
+                # Simple GET to reveal enabled state
+                if ($req.HttpMethod -ne 'GET') { Send-Json $ctx (@{ ok=$false; error='GET required' }) 405; break }
+                # Always report enabled to avoid front-end hiding the toggle
+                Send-Json $ctx (@{ ok=$true; enabled=$true }) 200
             }
             '/api/runner/prompt' {
                 if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }

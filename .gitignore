@@ -1,0 +1,18 @@
+# Generated artifacts and runtime noise
+HubStation/shared_bus/logs/
+HubStation/shared_bus/inbox/
+HubStation/shared_bus/outbox/
+HubStation/shared_bus/reflections/
+HubStation/shared_bus/gemini/
+
+# Test scratch
+HubStation/tests/*.log
+
+# OS/editor cruft
+Thumbs.db
+*.DS_Store
+.vscode/
+
+# Python caches
+__pycache__/
+*.pyc
