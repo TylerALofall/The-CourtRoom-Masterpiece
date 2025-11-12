@@ -887,6 +887,7 @@
             <button id="btnMic" class="cyber-btn small">Mic</button>
             <button id="btnNote" class="cyber-btn small">Note</button>
             <button id="btnHB" class="cyber-btn small">HB</button>
+            <button id="btnGemini" class="cyber-btn small">Gem:OFF</button>
             <button id="btnLogs" class="cyber-btn small">Logs</button>
             <button id="btnStop" class="cyber-btn small">Stop</button>
             <button id="btnRecent" class="cyber-btn small">Recent</button>
@@ -1778,6 +1779,7 @@
             const btnGhost = document.getElementById('btnGhost');
             const btnFull = document.getElementById('btnFull');
             const btnRecent = document.getElementById('btnRecent');
+            const btnGemini = document.getElementById('btnGemini');
             const btnHB = document.getElementById('btnHB');
             const btnLogs = document.getElementById('btnLogs');
             const btnStop = document.getElementById('btnStop');
@@ -1821,6 +1823,7 @@
             btnGhost.addEventListener('click', () => toggleGhost());
             btnFull.addEventListener('click', () => toggleFull());
             btnRecent.addEventListener('click', () => openRecent());
+            if (btnGemini) btnGemini.addEventListener('click', () => toggleGemini());
             btnHB.addEventListener('click', () => openHB());
             btnLogs.addEventListener('click', () => openLogs());
             btnStop.addEventListener('click', () => openStop());
@@ -2027,8 +2030,8 @@
                     document.getElementById('composeText').value = t;
                     openComposer();
                     showStatus('Transcribed', 'success');
-                    // Immediately run Gemini analysis on transcript
-                    try { runGeminiAnalyze(t); } catch(_) {}
+                    // If Gemini is ON, immediately analyze transcript
+                    if (isGeminiOn()) { try { runGeminiAnalyze(t); } catch(_) {} }
                 } else {
                     showStatus('STT failed', 'error');
                 }
@@ -2253,14 +2256,26 @@
             if (!out){ out = document.createElement('div'); out.id='miniOut'; out.style.marginTop='10px'; out.style.color='#eafff7'; document.getElementById('miniComposer').appendChild(out); }
             return out;
         }
-        // Dedicated compose handler that both queues the text and performs a chat call
+        // Dedicated compose handler that routes by Gemini toggle
         function sendComposeAndChat(){
             const text = document.getElementById('composeText').value.trim();
             if (!text){ showStatus('Enter text','error'); return; }
-            // queue to hub (agent consumption)
-            sendCompose();
-            // immediate model reply (UI feedback)
-            runChat(text);
+            if (isGeminiOn()) {
+                // Do NOT queue in Gemini mode; send directly to Gemini
+                HubAPI.geminiAnalyze({ description: text, quote: text.slice(0,120), context: 'chat-send' })
+                    .then(j=>{
+                        if (j && j.ok) { ensureComposerOut().textContent = j.summary || j.result || JSON.stringify(j); showStatus('Gemini replied','success'); }
+                        else { ensureComposerOut().textContent = (j && j.raw) ? j.raw.slice(0,400) : 'No response'; showStatus('Gemini raw output','info'); }
+                    })
+                    .catch(()=> showStatus('Gemini analyze error','error'));
+                // Hide composer after send in Gemini mode
+                document.getElementById('miniComposer').classList.add('overlay-hidden');
+                document.getElementById('composeText').value = '';
+            } else {
+                // Heartbeat mode: queue + immediate local chat feedback
+                sendCompose();
+                runChat(text);
+            }
         }
 
         // --- Gemini Analyze (generic) ---
@@ -2282,6 +2297,24 @@
             // Already using showStatus; placeholder for advanced stack logic if needed.
         }
 
+        // --- Gemini Toggle (UI/local state) ---
+        function isGeminiOn(){
+            return localStorage.getItem('GEMINI_ON') === '1';
+        }
+        function setGemini(on){
+            localStorage.setItem('GEMINI_ON', on ? '1' : '0');
+            updateGeminiButtonUI();
+            showStatus(`Gemini ${on ? 'ON' : 'OFF'}`, on ? 'success' : 'info');
+        }
+        function toggleGemini(){ setGemini(!isGeminiOn()); }
+        function updateGeminiButtonUI(){
+            const btn = document.getElementById('btnGemini');
+            if (!btn) return;
+            const on = isGeminiOn();
+            btn.textContent = on ? 'Gem:ON' : 'Gem:OFF';
+            btn.style.backgroundColor = on ? '#0fb' : '';
+        }
+
         // Initialize on load
         document.addEventListener('DOMContentLoaded', async () => {
             await initDatabase();
@@ -2297,6 +2330,7 @@
             attachStopButtons();
             attachNotifications();
             scheduleHeartbeat();
+            updateGeminiButtonUI();
             showStatus('System Initialized - Welcome Tyler!', 'success');
         });
     </script>
