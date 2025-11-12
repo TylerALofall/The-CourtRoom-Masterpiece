@@ -13,9 +13,9 @@
       ]
     },
     "heartbeat": {
-      "description": "Seconds between allowed loop ticks.",
+      "description": "Seconds between allowed loop ticks. 0 = disabled.",
       "type": "integer",
-      "minimum": 0, // 0 = disabled
+      "minimum": 0,
       "default": 60
     },
     "goal": {
@@ -24,28 +24,29 @@
       "minLength": 40
     },
     "model_long_term_goal": {
-      "description": "Model’s own running long-term objective (editable by model).",
-      "type": "string" //min 100 characters
+      "description": "Model's own running long-term objective (editable by model). Minimum 100 characters recommended.",
+      "type": "string",
+      "minLength": 1
     },
     "notes": {
-      "description": "Memory notes (persistent between turns).",
-      "type": "string" //modl or user editable
+      "description": "Memory notes (persistent between turns). Model or user editable.",
+      "type": "string"
     },
     "scratchpad": {
-      "description": "Working scratch for step-by-step planning this turn.",
-      "type": "string" //model needs min slots filled making him annotate
+      "description": "Working scratch for step-by-step planning this turn. Model needs minimum slots filled for annotation.",
+      "type": "string"
     },
     "tools": {
-      "description": "Tooling hints and groupings.",
-    ***  "type": "object", //this needs chnged to array, no layers... model needs to self prompt so he can edit this next turn when needed and has the tools to do so
+      "description": "Tooling hints and groupings. NOTE: This may need to be changed to array format for better self-prompt editability.",
+      "type": "object",
       "properties": {
         "cheatsheet": {
- this only appears once the previous tool selection is picked this then opens up a door to to an instant return prompt (rag) and that rag will have lots of answer... but it wont take up his context window in the previous logs. This way his choices are not clouded with tons of pointless pollution diluting down his focus.     ...   SEE MESSAGE WHEN YOU GET HERE BECAUSE THIS WILL NOT BE ACCEPTABLE LIKE THIS IS  "description": "Freeform list of tool names or tips.",
+          "description": "Freeform list of tool names or tips. RAG-based retrieval for context efficiency.",
           "type": "array",
           "items": { "type": "string" }
         },
         "classes": {
-"description": "Tool classes and their SAME ISSUE THIS IS WHY I WANT ALL OUT MESSAGES TO BE PROMPTS BECAUSE IM TIRED OF TYPING OUT!!!!!ems.",
+          "description": "Tool classes and their items organized by category.",
           "type": "object",
           "properties": {
             "drafting": { "type": "array", "items": { "type": "string" } },
