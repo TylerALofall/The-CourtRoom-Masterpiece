@@ -3,13 +3,21 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+Write-Host "[DEBUG] HubStation starting..." -ForegroundColor Cyan
+Write-Host "[DEBUG] PSScriptRoot: $PSScriptRoot" -ForegroundColor Cyan
+
 $ConfigPath = Join-Path $PSScriptRoot 'hub_config.json'
+Write-Host "[DEBUG] Config path: $ConfigPath" -ForegroundColor Cyan
 if (-not (Test-Path $ConfigPath)) {
+    Write-Host "[DEBUG] Config not found, creating default..." -ForegroundColor Yellow
+    # Updated default port to 9099 (was 9199) to standardize environment
     $default = @{ Port = 9099; OllamaBaseUrl = 'http://127.0.0.1:11434'; DefaultVoice = $null; Rate = 0; Volume = 100 }
     $default | ConvertTo-Json | Set-Content -Path $ConfigPath -Encoding UTF8
 }
 
+Write-Host "[DEBUG] Loading config..." -ForegroundColor Cyan
 $Config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
+Write-Host "[DEBUG] Config loaded. Port: $($Config.Port)" -ForegroundColor Green
 
 $Port = if ($Config.Port) { [int]$Config.Port } else { 9099 }
 $OllamaBaseUrl = if ($Config.OllamaBaseUrl) { [string]$Config.OllamaBaseUrl } else { 'http://127.0.0.1:11434' }
@@ -54,6 +62,78 @@ $script:VoiceBlockList = if ($Config -and $Config.PSObject.Properties.Match('Voi
 { @($Config.VoiceBlockList) } else { @('Microsoft David Desktop','Microsoft David') }
 
 Add-Type -AssemblyName System.Speech | Out-Null
+
+# Helper function for TTS feedback
+function Speak-Status {
+    param([string]$Message)
+    try {
+        $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        $synth.Rate = 1  # Slightly faster
+        $synth.SpeakAsync($Message) | Out-Null
+    } catch {
+        # Silent fail if TTS not available
+    }
+}
+
+# ==============================================================================
+# Import Gemini Service Module
+# ==============================================================================
+
+$GeminiServicePath = Join-Path $PSScriptRoot 'GeminiService.ps1'
+if (Test-Path $GeminiServicePath) {
+    try {
+        Import-Module $GeminiServicePath -Force -ErrorAction Stop
+        Write-Host "[INIT] GeminiService module loaded" -ForegroundColor Green
+        Speak-Status "Gemini Service loaded"
+    } catch {
+        Write-Host "[INIT] Failed to load GeminiService: $($_.Exception.Message)" -ForegroundColor Red
+        Speak-Status "Error loading Gemini Service"
+    }
+} else {
+    Write-Host "[INIT] GeminiService.ps1 not found at: $GeminiServicePath" -ForegroundColor Yellow
+    Speak-Status "Gemini Service not found"
+}
+
+# ==============================================================================
+# Import OllamaRunner Router Module
+# ==============================================================================
+
+$RouterPath = Join-Path $PSScriptRoot 'OllamaRunner\Router.ps1'
+if (Test-Path $RouterPath) {
+    try {
+        # Dot-source the router and its dependencies
+        . $RouterPath
+        Write-Host "[INIT] OllamaRunner Router loaded" -ForegroundColor Green
+        Speak-Status "Ollama Runner loaded"
+    } catch {
+        Write-Host "[INIT] Failed to load Router: $($_.Exception.Message)" -ForegroundColor Red
+        Speak-Status "Error loading Ollama Runner"
+    }
+} else {
+    Write-Host "[INIT] Router.ps1 not found at: $RouterPath" -ForegroundColor Yellow
+    Speak-Status "Ollama Runner not found"
+}
+
+# ==============================================================================
+# Import Reflections Module
+# ==============================================================================
+
+$ReflectionsPath = Join-Path $PSScriptRoot 'Reflections.psm1'
+if (Test-Path $ReflectionsPath) {
+    try {
+        Import-Module $ReflectionsPath -Force -ErrorAction Stop
+        Write-Host "[INIT] Reflections module loaded" -ForegroundColor Green
+        Speak-Status "Reflections module loaded"
+        # Initialize the store
+        Initialize-ReflectionStore | Out-Null
+    } catch {
+        Write-Host "[INIT] Failed to load Reflections: $($_.Exception.Message)" -ForegroundColor Red
+        Speak-Status "Error loading Reflections module"
+    }
+} else {
+    Write-Host "[INIT] Reflections.psm1 not found at: $ReflectionsPath" -ForegroundColor Yellow
+    Speak-Status "Reflections module not found"
+}
 
 function Write-Log { param([string]$Msg,[string]$Level='INFO')
     $line = "[$(Get-Date -Format o)] [$Level] $Msg"
@@ -323,27 +403,57 @@ function Pop-NotifyItems([int]$Max){
 
 $prefix = "http://127.0.0.1:$Port/"
 $prefixLocal = "http://localhost:$Port/"
+
+Write-Host "[DEBUG] Creating HttpListener..." -ForegroundColor Cyan
 $listener = [System.Net.HttpListener]::new()
+
+Write-Host "[DEBUG] Adding prefix: $prefix" -ForegroundColor Cyan
 $listener.Prefixes.Add($prefix)
+
+Write-Host "[DEBUG] Adding prefix: $prefixLocal" -ForegroundColor Cyan
 $listener.Prefixes.Add($prefixLocal)
+
+Write-Host "[DEBUG] Starting listener..." -ForegroundColor Cyan
 try {
     $listener.Start()
+    Write-Host "[LISTENER] Hub Station listening on $prefix and $prefixLocal" -ForegroundColor Green
+    Speak-Status "Hub Station is now listening on port $Port"
     Write-Log "Hub Station listening on $prefix and $prefixLocal"
+    # Launch the web UI
+    try {
+        Start-Process ("http://localhost:{0}/web" -f $Port) | Out-Null
+        Write-Host "[INIT] Opened browser to http://localhost:$Port/web" -ForegroundColor Green
+    } catch {
+        Write-Host "[WARN] Failed to open browser: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 } catch {
     $err = $_.Exception.Message
+    Write-Host "[ERROR] Listener start failed: $err" -ForegroundColor Red
     Write-Log ("Listener start failed (both prefixes): {0}" -f $err) 'ERROR'
     # Retry with only 127.0.0.1 to avoid localhost ACL/conflict issues
+    Write-Host "[DEBUG] Retrying with 127.0.0.1 only..." -ForegroundColor Yellow
     try { $listener.Close() } catch {}
     $listener = [System.Net.HttpListener]::new()
     $listener.Prefixes.Add($prefix)
     try {
         $listener.Start()
+        Write-Host "[LISTENER] Hub Station listening on $prefix (localhost disabled)" -ForegroundColor Yellow
         Write-Log "Hub Station listening on $prefix (localhost disabled due to previous error)" 'WARN'
+        # Launch the web UI (127.0.0.1 if localhost ACL failed)
+        try {
+            Start-Process ("http://127.0.0.1:{0}/web" -f $Port) | Out-Null
+            Write-Host "[INIT] Opened browser to http://127.0.0.1:$Port/web" -ForegroundColor Green
+        } catch {
+            Write-Host "[WARN] Failed to open browser: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     } catch {
+        Write-Host "[ERROR] Fallback failed: $($_.Exception.Message)" -ForegroundColor Red
         Write-Log ("Fallback listener start failed on {0}: {1}" -f $prefix, $_.Exception.Message) 'ERROR'
         throw
     }
 }
+
+Write-Host "[DEBUG] Entering request loop..." -ForegroundColor Cyan
 
 while ($true) {
     $ctx = $listener.GetContext()
@@ -684,6 +794,232 @@ while ($true) {
                 } catch {}
                 $items = Pop-QueueItems -Release $rel -Max $max
                 Send-Json $ctx (@{ ok=$true; items = $items }) 200
+            }
+            '/process/terminate' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try { $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop } catch { Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400; break }
+                if (-not $json.pid) { Send-Json $ctx (@{ ok=$false; error='pid required' }) 400; break }
+                $pid = 0
+                try { $pid = [int]$json.pid } catch { Send-Json $ctx (@{ ok=$false; error='pid must be an integer' }) 400; break }
+                if ($pid -le 0) { Send-Json $ctx (@{ ok=$false; error='invalid pid' }) 400; break }
+
+                # Prevent self-termination and common critical processes
+                $thisPid = [System.Diagnostics.Process]::GetCurrentProcess().Id
+                if ($pid -eq $thisPid) { Send-Json $ctx (@{ ok=$false; error='refusing to terminate server process' }) 403; break }
+                $blockNames = @('system','idle','csrss','wininit','winlogon','services','lsass','smss','dwm','registry')
+
+                try {
+                    $p = Get-Process -Id $pid -ErrorAction Stop
+                    $nameLc = ($p.Name).ToLowerInvariant()
+                    if ($blockNames -contains $nameLc) {
+                        Send-Json $ctx (@{ ok=$false; error=('refusing to terminate critical process: ' + $p.Name); pid=$pid; name=$p.Name }) 403
+                        break
+                    }
+                    $force = $false
+                    if ($json.PSObject.Properties.Match('force').Count -gt 0) { $force = [bool]$json.force }
+                    Stop-Process -Id $pid -Force:$force -ErrorAction Stop
+                    Write-Log ("Terminated process {0} (PID {1}) force={2}" -f $p.Name, $pid, $force)
+                    Send-Json $ctx (@{ ok=$true; pid=$pid; name=$p.Name; force=$force }) 200
+                } catch {
+                    $msg = $_.Exception.Message
+                    if ($msg -match 'Cannot find a process with the process identifier') {
+                        Send-Json $ctx (@{ ok=$false; error='process not found'; pid=$pid }) 404
+                    } else {
+                        Send-Json $ctx (@{ ok=$false; error=$msg; pid=$pid }) 500
+                    }
+                }
+            }
+            '/api/gemini/analyze' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try {
+                    $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop
+                } catch {
+                    Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400
+                    break
+                }
+
+                # Validate required fields
+                if (-not $json.description) {
+                    Send-Json $ctx (@{ ok=$false; error='description required' }) 400
+                    break
+                }
+                if (-not $json.quote) {
+                    Send-Json $ctx (@{ ok=$false; error='quote required' }) 400
+                    break
+                }
+
+                Write-Log "[GEMINI] Analyze request received"
+
+                try {
+                    # Check if GeminiService module is loaded
+                    if (-not (Get-Command Handle-GeminiAnalyzeRequest -ErrorAction SilentlyContinue)) {
+                        Send-Json $ctx (@{ ok=$false; error='GeminiService module not loaded' }) 500
+                        break
+                    }
+
+                    $result = Handle-GeminiAnalyzeRequest -RequestBody $json
+
+                    if ($result.statusCode -eq 200) {
+                        $resultObj = $result.body | ConvertFrom-Json
+                        Send-Json $ctx $resultObj 200
+                    } else {
+                        Send-Json $ctx (@{ ok=$false; error=$result.body }) $result.statusCode
+                    }
+                } catch {
+                    Write-Log "[GEMINI] Error: $($_.Exception.Message)" 'ERROR'
+                    Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
+                }
+            }
+            '/api/runner/prompt' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try {
+                    $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop
+                } catch {
+                    Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400
+                    break
+                }
+
+                # Validate required fields
+                if (-not $json.prompt) {
+                    Send-Json $ctx (@{ ok=$false; error='prompt required' }) 400
+                    break
+                }
+
+                $prompt = [string]$json.prompt
+                $context = if ($json.context) { [string]$json.context } else { "" }
+
+                Write-Log "[RUNNER] Prompt received: $($prompt.Substring(0, [Math]::Min(50, $prompt.Length)))..."
+
+                try {
+                    # Check if Router functions are loaded
+                    if (-not (Get-Command Invoke-OllamaWithSchema -ErrorAction SilentlyContinue)) {
+                        Send-Json $ctx (@{ ok=$false; error='OllamaRunner module not loaded' }) 500
+                        break
+                    }
+
+                    # Call the router with the prompt
+                    $jsonResponse = Invoke-OllamaWithSchema -Prompt $prompt -Context $context
+
+                    if (-not $jsonResponse) {
+                        Send-Json $ctx (@{ ok=$false; error='Failed to get response from model' }) 500
+                        break
+                    }
+
+                    # Route the response
+                    $routeResult = Invoke-RouteResponse -JsonResponse $jsonResponse
+
+                    # Return result
+                    Send-Json $ctx (@{
+                        ok = $true
+                        route = $jsonResponse.route
+                        content = $jsonResponse.content
+                        result = $routeResult
+                    }) 200
+                } catch {
+                    Write-Log "[RUNNER] Error: $($_.Exception.Message)" 'ERROR'
+                    Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
+                }
+            }
+            '/logs/csv/tail' {
+                if ($req.HttpMethod -ne 'GET') { Send-Json $ctx (@{ ok=$false; error='GET required' }) 405; break }
+
+                $rows = 30
+                try {
+                    if ($req.Url.Query) {
+                        $qry = $req.Url.Query.TrimStart('?')
+                        foreach ($pair in ($qry -split '&')) {
+                            if (-not $pair) { continue }
+                            $kv = $pair -split '=',2
+                            if ($kv.Length -ge 2 -and $kv[0] -eq 'rows') {
+                                try { $rows = [int]$kv[1] } catch {}
+                            }
+                        }
+                    }
+                } catch {}
+
+                Write-Log "[REFLECT] CSV tail requested: $rows rows"
+
+                try {
+                    if (-not (Get-Command Get-LogTailCsv -ErrorAction SilentlyContinue)) {
+                        Send-Json $ctx (@{ ok=$false; error='Reflections module not loaded' }) 500
+                        break
+                    }
+
+                    $result = Get-LogTailCsv -Count $rows
+                    Send-Json $ctx $result 200
+                } catch {
+                    Write-Log "[REFLECT] Error: $($_.Exception.Message)" 'ERROR'
+                    Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
+                }
+            }
+            '/reflect/window' {
+                if ($req.HttpMethod -ne 'GET') { Send-Json $ctx (@{ ok=$false; error='GET required' }) 405; break }
+
+                $rows = 30
+                try {
+                    if ($req.Url.Query) {
+                        $qry = $req.Url.Query.TrimStart('?')
+                        foreach ($pair in ($qry -split '&')) {
+                            if (-not $pair) { continue }
+                            $kv = $pair -split '=',2
+                            if ($kv.Length -ge 2 -and $kv[0] -eq 'rows') {
+                                try { $rows = [int]$kv[1] } catch {}
+                            }
+                        }
+                    }
+                } catch {}
+
+                Write-Log "[REFLECT] Window requested: $rows rows"
+
+                try {
+                    if (-not (Get-Command Request-ReflectionWindow -ErrorAction SilentlyContinue)) {
+                        Send-Json $ctx (@{ ok=$false; error='Reflections module not loaded' }) 500
+                        break
+                    }
+
+                    $result = Request-ReflectionWindow -RowCount $rows
+                    Send-Json $ctx $result 200
+                } catch {
+                    Write-Log "[REFLECT] Error: $($_.Exception.Message)" 'ERROR'
+                    Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
+                }
+            }
+            '/reflect/submit' {
+                if ($req.HttpMethod -ne 'POST') { Send-Json $ctx (@{ ok=$false; error='POST required' }) 405; break }
+                $body = Read-Body $ctx
+                try {
+                    $json = ConvertFrom-Json -InputObject $body -ErrorAction Stop
+                } catch {
+                    Send-Json $ctx (@{ ok=$false; error='Invalid JSON' }) 400
+                    break
+                }
+
+                Write-Log "[REFLECT] Reflection submission received"
+
+                try {
+                    if (-not (Get-Command Submit-ReflectionRow -ErrorAction SilentlyContinue)) {
+                        Send-Json $ctx (@{ ok=$false; error='Reflections module not loaded' }) 500
+                        break
+                    }
+
+                    # Convert JSON to hashtable
+                    $reflection = @{}
+                    $json.PSObject.Properties | ForEach-Object {
+                        $reflection[$_.Name] = $_.Value
+                    }
+
+                    $uid = if ($json.uid) { [string]$json.uid } else { '' }
+                    $metaTags = if ($json.meta_tags) { [string]$json.meta_tags } else { '' }
+
+                    $result = Submit-ReflectionRow -Reflection $reflection -Uid $uid -MetaTags $metaTags
+                    Send-Json $ctx $result 200
+                } catch {
+                    Write-Log "[REFLECT] Error: $($_.Exception.Message)" 'ERROR'
+                    Send-Json $ctx (@{ ok=$false; error=$_.Exception.Message }) 500
+                }
             }
             Default {
                 Send-Json $ctx (@{ ok=$false; error='Not found' }) 404

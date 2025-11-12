@@ -1860,14 +1860,39 @@
             document.getElementById('composeText').focus();
         }
 
+        // Centralized Hub API wrapper for all network interactions
+        const HubAPI = (() => {
+            const base = 'http://127.0.0.1:9099';
+            const jsonHeaders = { 'Content-Type': 'application/json' };
+            const post = async (path, body) => {
+                const resp = await fetch(`${base}${path}`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify(body || {}) });
+                const text = await resp.text();
+                try { return JSON.parse(text); } catch { return { ok: false, raw: text }; }
+            };
+            const get = async (path) => {
+                const resp = await fetch(`${base}${path}`);
+                const text = await resp.text();
+                try { return JSON.parse(text); } catch { return { ok: false, raw: text }; }
+            };
+            return {
+                queuePush: (text, target, priority = 'normal', release = 'heartbeat') => post('/queue/push', { text, target, priority, release }),
+                chat: (model, messages) => post('/chat', { model, messages }),
+                run: (action, params = {}) => post('/run', { action, ...params }),
+                heartbeatTick: () => post('/heartbeat/tick', {}),
+                heartbeatEnable: (enabled) => post('/heartbeat/enable', { enabled }),
+                logsTail: (n = 200) => get(`/logs/csv/tail?n=${encodeURIComponent(n)}`),
+                logs: (n = 200) => get(`/logs?n=${encodeURIComponent(n)}`),
+                processesRecent: (count = 10) => post('/run', { action: 'recent-processes', count }),
+                processTerminate: (pid) => post('/process/terminate', { pid }),
+                ollamaStop: (name) => post('/ollama/stop', { name }),
+                stt: (audioBase64, extension = 'wav') => post('/stt', { audioBase64, extension }),
+                geminiAnalyze: (payload) => post('/api/gemini/analyze', payload || {}),
+            };
+        })();
+
         async function pushToHubQueue(text, target){
             try {
-                const resp = await fetch('http://127.0.0.1:9099/queue/push', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, target, priority: 'normal', release: 'heartbeat' })
-                });
-                const data = await resp.json();
+                const data = await HubAPI.queuePush(text, target);
                 if (data && data.ok) { showStatus(`Queued (${target})`, 'success'); }
                 else { showStatus('Queue error', 'error'); }
             } catch (e) { showStatus('Hub not reachable', 'error'); }
@@ -1876,12 +1901,7 @@
         async function sendMiniChat(text, target) {
             try {
                 agentBusy = true;
-                const body = {
-                    model: 'qwen3:latest',
-                    messages: [ { role: 'user', content: text } ]
-                };
-                const resp = await fetch('http://127.0.0.1:9099/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                const data = await resp.json();
+                const data = await HubAPI.chat('qwen3:latest', [ { role: 'user', content: text } ]);
                 if (data && data.ok && data.response) {
                     const msg = target === 'board' ? `Board: ${data.response}` : data.response;
                     showStatus(msg.substring(0, 200), 'success');
@@ -1906,14 +1926,14 @@
         }
 
         function attachComposerButtons() {
-            document.getElementById('btnSendCompose').addEventListener('click', sendCompose);
+            // Use combined handler so we don't override function definitions later
+            document.getElementById('btnSendCompose').addEventListener('click', sendComposeAndChat);
             document.getElementById('btnCancelCompose').addEventListener('click', () => document.getElementById('miniComposer').classList.add('overlay-hidden'));
         }
 
         async function openRecent() {
             try {
-                const resp = await fetch('http://127.0.0.1:9099/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'recent-processes', count: 10 }) });
-                const data = await resp.json();
+                const data = await HubAPI.processesRecent(10);
                 if (data && data.ok && Array.isArray(data.items)) {
                     const list = data.items.map(x => `${x.started}  ${x.name} (${x.pid})`).join('\n');
                     document.getElementById('recentList').textContent = list;
@@ -2001,16 +2021,14 @@
             if (!blob) return;
             try {
                 const base64 = await blobToBase64(blob);
-                const resp = await fetch('http://127.0.0.1:9099/stt', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ audioBase64: base64, extension: 'wav' })
-                });
-                const data = await resp.json();
+                const data = await HubAPI.stt(base64, 'wav');
                 if (data && data.ok && data.text) {
                     const t = data.text.trim();
                     document.getElementById('composeText').value = t;
                     openComposer();
                     showStatus('Transcribed', 'success');
+                    // Immediately run Gemini analysis on transcript
+                    try { runGeminiAnalyze(t); } catch(_) {}
                 } else {
                     showStatus('STT failed', 'error');
                 }
@@ -2105,7 +2123,7 @@
             if (hbBusy || agentBusy) { return; }
             hbBusy = true;
             try {
-                await fetch('http://127.0.0.1:9099/heartbeat/tick', { method: 'POST' }).then(r=>r.json()).catch(()=>null);
+                await HubAPI.heartbeatTick();
                 const now = new Date().toISOString();
                 localStorage.setItem('HB_LAST', now);
             } finally {
@@ -2129,13 +2147,139 @@
                 const secs = minutes * 60;
                 saveHeartbeatSettings(enabled, secs);
                 // Inform HubStation so agent gating can see enabled flag
-                fetch('http://127.0.0.1:9099/heartbeat/enable', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ enabled }) }).catch(()=>{});
+                HubAPI.heartbeatEnable(enabled).catch(()=>{});
                 scheduleHeartbeat();
                 document.getElementById('hbStatus').value = enabled ? 'running' : 'idle';
                 document.getElementById('hbModal').classList.add('overlay-hidden');
                 showStatus(`Heartbeat ${enabled ? 'on' : 'off'} @ ${minutes}m`, 'info');
             });
             document.getElementById('btnCancelHB').addEventListener('click', () => document.getElementById('hbModal').classList.add('overlay-hidden'));
+        }
+
+        // --- Logs Modal Wiring ---
+        function openLogs(){
+            document.getElementById('logsModal').classList.remove('overlay-hidden');
+            fetchLogs();
+        }
+        async function fetchLogs(){
+            try {
+                // Prefer CSV tail endpoint if available
+                const j = await HubAPI.logsTail(200);
+                let lines = [];
+                if (j && j.ok && Array.isArray(j.lines)) { lines = j.lines; }
+                // Fallback /logs endpoint (returns {lines:[]}) if first failed
+                if (!lines.length) {
+                    const j2 = await HubAPI.logs(200);
+                    if (j2 && Array.isArray(j2.lines)) lines = j2.lines;
+                }
+                const pre = document.getElementById('logsList');
+                pre.textContent = (lines.slice(-200).join('\n')) || '(empty)';
+                showStatus('Logs updated', 'info');
+            } catch(e){ showStatus('Logs fetch error','error'); }
+        }
+        function attachLogsButtons(){
+            document.getElementById('btnRefreshLogs').addEventListener('click', fetchLogs);
+            document.getElementById('btnCloseLogs').addEventListener('click', ()=>document.getElementById('logsModal').classList.add('overlay-hidden'));
+        }
+
+        // --- Stop Process / Model ---
+        let stopSelectedPid = null;
+        function openStop(){
+            document.getElementById('stopModal').classList.remove('overlay-hidden');
+            fetchPsList();
+        }
+        async function fetchPsList(){
+            try {
+                const data = await HubAPI.processesRecent(30);
+                const listEl = document.getElementById('psList');
+                listEl.innerHTML='';
+                if (data && data.ok && Array.isArray(data.items)) {
+                    data.items.forEach(p=>{
+                        const div = document.createElement('div');
+                        div.className='list-item';
+                        div.textContent = `${p.started}  ${p.name} (${p.pid})`;
+                        div.dataset.pid = p.pid;
+                        div.style.cursor='pointer';
+                        div.onclick = ()=>{
+                            stopSelectedPid = parseInt(div.dataset.pid||'0');
+                            listEl.querySelectorAll('.list-item').forEach(x=>x.style.background='');
+                            div.style.background='rgba(0,255,170,0.18)';
+                        };
+                        listEl.appendChild(div);
+                    });
+                    showStatus('Process list loaded','info');
+                } else { showStatus('No processes','info'); }
+            } catch(e){ showStatus('Process list error','error'); }
+        }
+        async function attemptStop(){
+            const modelName = document.getElementById('stopModelName').value.trim();
+            try {
+                if (modelName) {
+                    const j = await HubAPI.ollamaStop(modelName);
+                    if (j && j.ok) { showStatus(`Stopped model ${modelName}`,'success'); return; }
+                    throw new Error(j && j.error ? j.error : 'Model stop failed');
+                }
+                if (!stopSelectedPid) { showStatus('Select a PID or enter model name','error'); return; }
+                const j2 = await HubAPI.processTerminate(stopSelectedPid);
+                if (j2 && j2.ok) { showStatus(`Terminated PID ${stopSelectedPid}`,'success'); fetchPsList(); return; }
+                throw new Error(j2 && j2.error ? j2.error : 'Terminate failed');
+            } catch(e){ showStatus(e.message || 'Stop error','error'); }
+        }
+        function attachStopButtons(){
+            document.getElementById('btnFetchPS').addEventListener('click', fetchPsList);
+            document.getElementById('btnDoStop').addEventListener('click', attemptStop);
+            document.getElementById('btnCloseStop').addEventListener('click', ()=>{
+                document.getElementById('stopModal').classList.add('overlay-hidden');
+                stopSelectedPid=null; document.getElementById('psList').innerHTML='';
+            });
+        }
+
+        // --- Chat Output History (inline) ---
+        let chatHistory = [];
+        async function runChat(userText){
+            const target = document.getElementById('chatTarget').dataset.target || 'tyler';
+            try {
+                const messages = chatHistory.concat([{ role:'user', content:userText }]);
+                const data = await HubAPI.chat('qwen3:latest', messages);
+                if (data && data.ok && data.response){
+                    chatHistory = messages.concat([{ role:'assistant', content:data.response }]);
+                    ensureComposerOut().textContent = data.response;
+                    showStatus('Chat reply','success');
+                } else { showStatus('Chat failed','error'); }
+            } catch(e){ showStatus('Chat error','error'); }
+        }
+        function ensureComposerOut(){
+            let out = document.getElementById('miniOut');
+            if (!out){ out = document.createElement('div'); out.id='miniOut'; out.style.marginTop='10px'; out.style.color='#eafff7'; document.getElementById('miniComposer').appendChild(out); }
+            return out;
+        }
+        // Dedicated compose handler that both queues the text and performs a chat call
+        function sendComposeAndChat(){
+            const text = document.getElementById('composeText').value.trim();
+            if (!text){ showStatus('Enter text','error'); return; }
+            // queue to hub (agent consumption)
+            sendCompose();
+            // immediate model reply (UI feedback)
+            runChat(text);
+        }
+
+        // --- Gemini Analyze (generic) ---
+        async function runGeminiAnalyze(transcript){
+            if (!transcript) return;
+            try {
+                const j = await HubAPI.geminiAnalyze({ description: transcript, quote: transcript.slice(0,120), context: 'voice-capture' });
+                if (j && j.ok){ ensureComposerOut().textContent = j.summary || j.result || JSON.stringify(j); showStatus('Gemini analyzed','success'); }
+                else {
+                    const raw = (j && j.raw) ? j.raw : JSON.stringify(j || {});
+                    ensureComposerOut().textContent = raw.slice(0,400);
+                    showStatus('Gemini raw output','info');
+                }
+            } catch(e){ showStatus('Gemini analyze error','error'); }
+        }
+
+        // --- Ephemeral Notifications Bridge (optional expansion) ---
+        function attachNotifications(){
+            // Already using showStatus; placeholder for advanced stack logic if needed.
         }
 
         // Initialize on load
