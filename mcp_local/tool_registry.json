@@ -1,0 +1,122 @@
+{
+  "schema_version": "1.0",
+  "description": "Local MCP tool registry. All tool names and field names use snake_case. Tools live in mcp_tools/ and are invoked by Invoke-McpHost.ps1.",
+  "tools": [
+    {
+      "tool_name": "get_tool_menu",
+      "description": "Returns the list of registered tools with their input/output contracts.",
+      "script": "Get-ToolMenu.ps1",
+      "input": {},
+      "output": {
+        "ok": "bool",
+        "tools": "array of tool_entry objects"
+      }
+    },
+    {
+      "tool_name": "list_documents",
+      "description": "Lists documents from the local ECF file library. Supports optional filtering by case_no, case_name, and filing_source.",
+      "script": "Get-DocumentList.ps1",
+      "input": {
+        "case_no": "string (optional)",
+        "case_name": "string (optional)",
+        "filing_source": "string (optional)",
+        "page_no": "int (optional, 1-based, default 1)",
+        "page_size": "int (optional, default 50)"
+      },
+      "output": {
+        "ok": "bool",
+        "total": "int",
+        "page_no": "int",
+        "page_size": "int",
+        "documents": "array — each entry: { document_no, case_no, case_name, authorship, total_pages, filing_source, file_name }"
+      }
+    },
+    {
+      "tool_name": "search_documents",
+      "description": "Full-text keyword search across document filenames and XML metadata. Returns ranked results.",
+      "script": "Search-Documents.ps1",
+      "input": {
+        "query": "string (required)",
+        "case_no": "string (optional)",
+        "filing_source": "string (optional)"
+      },
+      "output": {
+        "ok": "bool",
+        "query": "string",
+        "results": "array — each entry: { document_no, case_no, case_name, file_name, score, snippet }"
+      }
+    },
+    {
+      "tool_name": "resolve_citation",
+      "description": "Resolves a citation string (e.g. ecf[23]page[5]) to a specific document and page.",
+      "script": "Resolve-Citation.ps1",
+      "input": {
+        "citation": "string (required) — format: ecf[document_no]page[page_no] or [filing_source][document_no]page[page_no]"
+      },
+      "output": {
+        "ok": "bool",
+        "citation": "string",
+        "document_no": "string",
+        "page_no": "int",
+        "filing_source": "string",
+        "case_no": "string",
+        "file_name": "string"
+      }
+    },
+    {
+      "tool_name": "get_document_page",
+      "description": "Retrieves content for a specific page of a document. Returns text excerpt and page metadata.",
+      "script": "Get-DocumentPage.ps1",
+      "input": {
+        "document_no": "string (required)",
+        "page_no": "int (required)",
+        "case_no": "string (optional)"
+      },
+      "output": {
+        "ok": "bool",
+        "document_no": "string",
+        "case_no": "string",
+        "page_no": "int",
+        "total_pages": "int",
+        "filing_source": "string",
+        "authorship": "string",
+        "content_text": "string"
+      }
+    },
+    {
+      "tool_name": "get_xml_object",
+      "description": "Returns the XML master record for a document. XML is the canonical format; CSV/text are secondary views.",
+      "script": "Get-XmlObject.ps1",
+      "input": {
+        "document_no": "string (required)",
+        "case_no": "string (optional)"
+      },
+      "output": {
+        "ok": "bool",
+        "document_no": "string",
+        "case_no": "string",
+        "xml_path": "string",
+        "xml_content": "string (XML text)"
+      }
+    },
+    {
+      "tool_name": "create_block_plan",
+      "description": "Creates a structured block plan (outline) for a set of documents in a case. Writes the plan as an XML artifact.",
+      "script": "New-BlockPlan.ps1",
+      "input": {
+        "case_no": "string (required)",
+        "case_name": "string (optional)",
+        "block_title": "string (required)",
+        "document_nos": "array of strings (required)"
+      },
+      "output": {
+        "ok": "bool",
+        "block_title": "string",
+        "case_no": "string",
+        "document_count": "int",
+        "block_plan_path": "string",
+        "created_at_epoch": "int"
+      }
+    }
+  ]
+}
